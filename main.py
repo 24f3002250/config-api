@@ -1,3 +1,4 @@
+
 import os
 from pathlib import Path
 
@@ -16,6 +17,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+BASE_DIR = Path(__file__).resolve().parent
+
 DEFAULTS = {
     "port": 8000,
     "workers": 1,
@@ -25,30 +28,27 @@ DEFAULTS = {
 }
 
 ALIASES = {
-    "NUM_WORKERS": "workers",
-    "APP_PORT": "port",
-    "APP_WORKERS": "workers",
-    "APP_DEBUG": "debug",
-    "APP_LOG_LEVEL": "log_level",
-    "APP_API_KEY": "api_key",
+    "num_workers": "workers",
+    "app_port": "port",
+    "app_workers": "workers",
+    "app_debug": "debug",
+    "app_log_level": "log_level",
+    "app_api_key": "api_key",
 }
 
 def normalize_key(key):
-    key = key.strip()
-    return ALIASES.get(key, key.lower())
-
-def to_bool(value):
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {
-        "true", "1", "yes", "on"
-    }
+    key = key.strip().lower()
+    return ALIASES.get(key, key)
 
 def coerce(key, value):
     if key in ("port", "workers"):
         return int(value)
     if key == "debug":
-        return to_bool(value)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in (
+            "true", "1", "yes", "on"
+        )
     return str(value)
 
 @app.get("/")
@@ -59,31 +59,47 @@ def root():
 def effective_config(set: list[str] | None = Query(default=None)):
     config = DEFAULTS.copy()
 
-    env_name = os.getenv("APP_ENV", "development")
-    yaml_path = Path(f"config.{env_name}.yaml")
+    # 1. Environment-specific YAML
+    env_name = os.environ.get("APP_ENV", "development")
+    yaml_path = BASE_DIR / f"config.{env_name}.yaml"
 
     if yaml_path.exists():
         with yaml_path.open() as f:
             yaml_config = yaml.safe_load(f) or {}
+
         for key, value in yaml_config.items():
-            config[normalize_key(key)] = value
+            key = normalize_key(key)
+            if key in config:
+                config[key] = coerce(key, value)
 
-    for key, value in dotenv_values(".env").items():
+    # 2. .env file
+    env_file = dotenv_values(BASE_DIR / ".env")
+
+    for key, value in env_file.items():
         if value is not None:
-            config[normalize_key(key)] = value
+            key = normalize_key(key)
+            if key in config:
+                config[key] = coerce(key, value)
 
-    for key, value in os.environ.items():
-        if key.startswith("APP_"):
-            config[normalize_key(key)] = value
+    # 3. OS-level APP_* variables
+    for env_key, value in os.environ.items():
+        if env_key.startswith("APP_"):
+            key = normalize_key(env_key)
+            if key in config:
+                config[key] = coerce(key, value)
 
+    # 4. CLI query overrides
     for item in set or []:
-        if "=" in item:
-            key, value = item.split("=", 1)
-            config[normalize_key(key)] = value
+        if "=" not in item:
+            continue
 
-    result = {
-        key: coerce(key, config[key])
-        for key in DEFAULTS
-    }
-    result["api_key"] = "****"
-    return result
+        key, value = item.split("=", 1)
+        key = normalize_key(key)
+
+        if key in config:
+            config[key] = coerce(key, value)
+
+    # Always mask the secret
+    config["api_key"] = "****"
+
+    return config
