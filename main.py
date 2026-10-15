@@ -83,7 +83,7 @@ def effective_config(set: list[str] | None = Query(default=None)):
 
     # 3. OS-level APP_* variables
     for env_key, value in os.environ.items():
-        if env_key.startswith("APP_"):
+        if env_key.startswith("APP_") or env_key == "NUM_WORKERS":
             key = normalize_key(env_key)
             if key in config:
                 config[key] = coerce(key, value)
